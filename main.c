@@ -1,0 +1,330 @@
+#include "main.H"
+#include "LCD1602.H"
+#include "HX711.H"
+#include "EEPROM.H"
+
+//定义变量
+unsigned char KEY_NUM = 0;   //用来存放按键按下的键值
+unsigned long HX711_Buffer = 0;  //用来存放HX711读取出来的数据
+unsigned long Weight_Maopi = 0; //用来存放毛皮数据
+long Weight_Shiwu = 0;          //用来存放实物重量
+
+char price[3] = {0,0,0};
+unsigned char state = 0;    //用来存放设置状态
+unsigned char Blink_Speed = 0;
+
+long Totalprice = 0;
+unsigned int Unitprioce = 0;
+	
+#define Blink_Speed_Max 6          //该值可以改变设置指针闪烁频率
+
+//校准参数
+//因为不同的传感器特性曲线不是很一致，因此，每一个传感器需要矫正这里这个参数才能使测量值很准确。
+//当发现测试出来的重量偏大时，增加该数值。
+//如果测试出来的重量偏小时，减小改数值。
+//该值可以为小数
+#define GapValue 455
+
+//传感器最大测量值，单位是g
+#define AlarmValue 5000	
+		
+
+//****************************************************
+//主函数
+//****************************************************
+void main()
+{
+	Init_LCD1602();						//初始化LCD1602
+
+	LCD1602_write_com(0x80);			//设置LCD1602指针
+	LCD1602_write_word("Electronic scale");
+	
+	LCD1602_write_com(0x80+0x40);			//设置LCD1602指针
+	LCD1602_write_word("By Luxiaocheng");
+	
+	Get_Maopi();
+	Get_Maopi();
+	Delay_ms(1000);		 //延时1s
+	Get_Maopi();
+	Get_Maopi();				//称毛皮重量	//多次测量有利于HX711稳定
+    LCD1602_write_com(0x01);    //清屏
+    
+    //读取EEPROM中保存的报警值
+    price[0] = byte_read(0x2000);
+    price[1] = byte_read(0x2001);
+		price[2] = byte_read(0x2002);
+    Unitprioce = price[0]*100+price[1]*10+price[2];     //计算超限报警界限值
+	while(1)
+	{
+        Get_Weight();		
+	
+		//显示当前重量
+		LCD1602_write_com(0x80);
+    LCD1602_write_word("Weight=");
+		LCD1602_write_data(Weight_Shiwu%10000/1000 + 0x30);
+		LCD1602_write_data('.');
+		LCD1602_write_data(Weight_Shiwu%1000/100 + 0x30);
+ 		LCD1602_write_data(Weight_Shiwu%100/10 + 0x30);
+		LCD1602_write_data(Weight_Shiwu%10 + 0x30);		
+		LCD1602_write_word(" Kg");
+		
+		
+		
+		Totalprice = Weight_Shiwu * Unitprioce;
+		
+
+		KEY_NUM = Scan_Key();
+        if(KEY_NUM == 1)        //按键1切换设置状态
+        {
+            state++;
+            if(state == 5)
+            {
+                state = 0;
+                SectorErase(0x2000);
+                byte_write(0x2000,price[0]);				//保存EEPROM数据
+                byte_write(0x2001,price[1]);
+								byte_write(0x2002,price[2]);
+        
+                Unitprioce = price[0]*100+price[1]*10+price[2];    //计算超限报警界限值
+            }
+        }
+        if(KEY_NUM == 2)        //按键加
+        {
+            if(state != 0)
+            {
+                price[state-2]++;
+                if(price[state-2] >= 10)
+                {
+                    price[state-2] = 0;
+                }
+            }
+            
+        }
+        if(KEY_NUM == 3)        //按键减
+        {
+            if(state != 0)
+            {
+               price[state-2]--;
+                if(price[state-2] <= -1)
+                {
+                    price[state-2] = 9;
+                }
+            }
+        }
+		if(KEY_NUM == 4)
+		{
+			Get_Maopi();			//去皮	
+		}
+        
+        
+        if(state != 0)
+        {
+            Blink_Speed ++;
+            if(Blink_Speed == Blink_Speed_Max)
+            {
+                Blink_Speed = 0;
+            }
+        }
+        switch(state)
+        {
+						
+					case 0:
+                LCD1602_write_com(0x80+0x40);
+								LCD1602_write_word("TP=");
+								LCD1602_write_data(Totalprice%10000000/1000000 + 0x30);
+								LCD1602_write_data(Totalprice%1000000/100000 + 0x30);
+								LCD1602_write_data(Totalprice%100000/10000 + 0x30);
+								LCD1602_write_data('.');
+								LCD1602_write_data(Totalprice%10000/1000 + 0x30);	
+								LCD1602_write_data(Totalprice%1000/100 + 0x30);
+								LCD1602_write_data(Totalprice%100/10 + 0x30);
+								LCD1602_write_data(Totalprice%10/1 + 0x30);
+								LCD1602_write_word(" CNY");
+                break;
+           case 1:
+                LCD1602_write_com(0x80+0x40);
+                LCD1602_write_word("UP=");
+                LCD1602_write_data(price[0]+0x30);
+								LCD1602_write_data(price[1]+0x30);
+                LCD1602_write_data('.');
+                LCD1602_write_data(price[2]+0x30);
+                LCD1602_write_word(" CNY/Kg");
+								LCD1602_write_word("            ");
+                break;
+            case 2:
+               LCD1602_write_com(0x80+0x40);
+                LCD1602_write_word("UP=");
+                if(Blink_Speed < Blink_Speed_Max/2)
+                {
+                    LCD1602_write_data(price[0]+0x30);
+                }
+                else
+                {
+                    LCD1602_write_data(' ');
+                }
+              	LCD1602_write_data(price[1]+0x30);
+                LCD1602_write_data('.');
+                LCD1602_write_data(price[2]+0x30);
+                LCD1602_write_word(" CNY/Kg");
+                break;
+            case 3:
+               LCD1602_write_com(0x80+0x40);
+                LCD1602_write_word("UP=");
+                LCD1602_write_data(price[0]+0x30);
+                if(Blink_Speed < Blink_Speed_Max/2)
+                {
+                    LCD1602_write_data(price[1]+0x30);
+                }
+                else
+                {
+                    LCD1602_write_data(' ');
+                }
+								 LCD1602_write_data('.');
+                LCD1602_write_data(price[2]+0x30);
+                LCD1602_write_word(" CNY/Kg");
+                break;
+								
+								case 4:
+               LCD1602_write_com(0x80+0x40);
+                LCD1602_write_word("UP=");
+								LCD1602_write_data(price[0]+0x30);
+                LCD1602_write_data(price[1]+0x30);
+								LCD1602_write_data('.');
+                if(Blink_Speed < Blink_Speed_Max/2)
+                {
+                    LCD1602_write_data(price[2]+0x30);
+                }
+                else
+                {
+                    LCD1602_write_data(' ');
+                }
+								 
+                
+                LCD1602_write_word(" CNY/Kg");
+                break;
+           
+            default:
+                break;
+            
+        }
+        
+        //超限报警
+				
+		if(Weight_Shiwu >= 4200 && Weight_Shiwu < AlarmValue)
+		{
+				LED_Y = 0;
+				LED_R = 1;
+		}
+				
+    else if(Weight_Shiwu >= AlarmValue)	        //超过设置最大值或者传感器本身量程最大值报警	
+		{
+			Buzzer = 0;	
+			LED_R = 0;
+			LED_Y = 1;
+		}
+		else
+		{
+			Buzzer = 1;
+			LED_R = 1;
+			LED_Y = 1;
+		}
+	}
+}
+
+//****************************************************
+//称重
+//****************************************************
+void Get_Weight()
+{
+	Weight_Shiwu = HX711_Read();
+	Weight_Shiwu = Weight_Shiwu - Weight_Maopi;		//获取净重
+	if(Weight_Shiwu >= 0)			
+	{	
+		Weight_Shiwu = (unsigned long)((float)Weight_Shiwu/GapValue); 	//计算实物的实际重量
+	}
+	else
+	{
+		Weight_Shiwu = 0;
+	}
+	
+}
+
+//****************************************************
+//获取毛皮重量
+//****************************************************
+void Get_Maopi()
+{
+	Weight_Maopi = HX711_Read();	
+} 
+
+
+//****************************************************
+//MS延时函数(12M晶振下测试)
+//****************************************************
+void Delay_ms(unsigned int n)
+{
+	unsigned int  i,j;
+	for(i=0;i<n;i++)
+		for(j=0;j<123;j++);
+}
+
+//****************************************************
+//蜂鸣器程序
+//****************************************************
+void Buzzer_Di()
+{
+	Buzzer = 0;
+	LED_R = 0;
+	Delay_ms(10);
+	Buzzer = 1;
+	LED_R = 1;
+	Delay_ms(10);
+}
+
+//****************************************************
+//按键扫描程序
+//****************************************************
+unsigned char Scan_Key()
+{	
+    if( KEY1 == 0 )						//按键扫描
+	{
+		Delay_ms(10);					//延时去抖
+		if( KEY1 == 0 )
+		{
+			Buzzer_Di();
+			while(KEY1 == 0);			//等待松手
+			return 1;
+		}
+	}
+    if( KEY2 == 0 )						//按键扫描
+	{
+		Delay_ms(10);					//延时去抖
+		if( KEY2 == 0 )
+		{
+			Buzzer_Di();
+			while(KEY2 == 0);			//等待松手
+			return 2;
+		}
+	}
+    if( KEY3 == 0 )						//按键扫描
+	{
+		Delay_ms(10);					//延时去抖
+		if( KEY3 == 0 )
+		{
+			Buzzer_Di();
+			while(KEY3 == 0);			//等待松手
+			return 3;
+		}
+	}
+	if( KEY4 == 0 )						//按键扫描
+	{
+		Delay_ms(10);					//延时去抖
+		if( KEY4 == 0 )
+		{
+			Buzzer_Di();
+			while(KEY4 == 0);			//等待松手
+			return 4;
+		}
+	}
+    return 0;
+}
